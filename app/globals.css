@@ -2,26 +2,192 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * ── Identité visuelle "NUIT NÉON" ──────────────────────────────────────────
+ * Thème sombre par défaut, accents néon festifs (lime / magenta / cyan / or).
+ * Pas de violet/indigo générique de template. Inspiration : bar branché la nuit.
+ */
 
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: 240 24% 6%;
+    --foreground: 240 20% 97%;
+    --card: 240 22% 9%;
+    --card-foreground: 240 20% 97%;
+    --popover: 240 26% 8%;
+    --popover-foreground: 240 20% 97%;
+
+    --primary: 330 95% 60%; /* magenta néon — action signature */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 18% 16%;
+    --secondary-foreground: 240 20% 97%;
+    --muted: 240 16% 15%;
+    --muted-foreground: 240 12% 68%;
+    --accent: 82 90% 56%; /* lime néon — surbrillances / états actifs */
+    --accent-foreground: 240 35% 7%;
+    --destructive: 0 90% 62%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 16% 20%;
+    --input: 240 16% 18%;
+    --ring: 330 95% 60%;
+
+    /* Accents néon réutilisables (HSL bruts) */
+    --neon-lime: 82 92% 56%;
+    --neon-pink: 330 96% 62%;
+    --neon-cyan: 188 95% 55%;
+    --neon-violet: 268 90% 66%;
+    --neon-gold: 42 100% 58%;
+
+    --chart-1: 330 96% 62%;
+    --chart-2: 82 92% 56%;
+    --chart-3: 188 95% 55%;
+    --chart-4: 42 100% 58%;
+    --chart-5: 268 90% 66%;
+
+    --radius: 1rem;
+  }
+
+  /* Le thème sombre est le défaut ; on garde .dark identique pour les utilitaires dark:. */
+  .dark {
+    --background: 240 24% 6%;
+    --foreground: 240 20% 97%;
+    --card: 240 22% 9%;
+    --card-foreground: 240 20% 97%;
+    --popover: 240 26% 8%;
+    --popover-foreground: 240 20% 97%;
+    --primary: 330 95% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 18% 16%;
+    --secondary-foreground: 240 20% 97%;
+    --muted: 240 16% 15%;
+    --muted-foreground: 240 12% 68%;
+    --accent: 82 90% 56%;
+    --accent-foreground: 240 35% 7%;
+    --destructive: 0 90% 62%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 16% 20%;
+    --input: 240 16% 18%;
+    --ring: 330 95% 60%;
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    background-image:
+      radial-gradient(58% 48% at 50% -8%, hsl(var(--neon-pink) / 0.16), transparent 70%),
+      radial-gradient(48% 38% at 100% 4%, hsl(var(--neon-cyan) / 0.12), transparent 72%),
+      radial-gradient(46% 44% at 0% 100%, hsl(var(--neon-lime) / 0.1), transparent 72%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
 }
 
 @layer utilities {
-  .text-balance {
-    text-wrap: balance;
+  /* Police display à fort caractère pour titres / total / bannières. */
+  .font-display {
+    font-family: var(--font-display), var(--font-geist-sans), system-ui, sans-serif;
+    font-feature-settings: "ss01";
   }
+
+  /* Lueurs néon (texte). */
+  .text-glow-pink {
+    text-shadow: 0 0 16px hsl(var(--neon-pink) / 0.75), 0 0 4px hsl(var(--neon-pink) / 0.5);
+  }
+  .text-glow-lime {
+    text-shadow: 0 0 16px hsl(var(--neon-lime) / 0.7), 0 0 4px hsl(var(--neon-lime) / 0.5);
+  }
+  .text-glow-cyan {
+    text-shadow: 0 0 16px hsl(var(--neon-cyan) / 0.7), 0 0 4px hsl(var(--neon-cyan) / 0.5);
+  }
+
+  /* Bordure/halo néon (boîtes). */
+  .glow-pink {
+    box-shadow: 0 0 0 1px hsl(var(--neon-pink) / 0.5), 0 0 24px hsl(var(--neon-pink) / 0.3);
+  }
+  .glow-lime {
+    box-shadow: 0 0 0 1px hsl(var(--neon-lime) / 0.5), 0 0 24px hsl(var(--neon-lime) / 0.28);
+  }
+  .glow-cyan {
+    box-shadow: 0 0 0 1px hsl(var(--neon-cyan) / 0.5), 0 0 24px hsl(var(--neon-cyan) / 0.28);
+  }
+
+  /* Surface verre dépoli (panneaux, cartes flottantes). */
+  .glass {
+    background: hsl(240 22% 10% / 0.72);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+  }
+
+  /* Texte en dégradé néon. */
+  .text-gradient-festive {
+    background-image: linear-gradient(
+      100deg,
+      hsl(var(--neon-pink)),
+      hsl(var(--neon-gold)),
+      hsl(var(--neon-cyan))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Foil holographique animé (cartes Joker). */
+  .holo-foil {
+    background-image: linear-gradient(
+      125deg,
+      hsl(330 96% 62%),
+      hsl(42 100% 60%),
+      hsl(82 92% 56%),
+      hsl(188 95% 55%),
+      hsl(268 90% 66%),
+      hsl(330 96% 62%)
+    );
+    background-size: 300% 300%;
+    animation: holo-shift 5s linear infinite;
+  }
+  .holo-sheen {
+    background-image: linear-gradient(
+      115deg,
+      transparent 30%,
+      hsl(0 0% 100% / 0.45) 48%,
+      hsl(0 0% 100% / 0.1) 56%,
+      transparent 70%
+    );
+    background-size: 250% 250%;
+    animation: holo-sheen 3.5s ease-in-out infinite;
+  }
+
+  .tap-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+@keyframes holo-shift {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 300% 50%; }
+}
+@keyframes holo-sheen {
+  0%, 100% { background-position: 0% 0%; }
+  50% { background-position: 100% 100%; }
+}
+
+/* Barre de défilement discrète et cohérente avec le thème. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 9999px;
 }
