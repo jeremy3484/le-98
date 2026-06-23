@@ -49,7 +49,7 @@ export function TotalGauge({ total, maxTotal = 98 }: TotalGaugeProps) {
         style={{ background: color, opacity: 0.18 }}
       />
 
-      <svg width={size} height={size} className="-rotate-90">
+      <svg width={size} height={size} className="-rotate-90 overflow-visible">
         <circle
           cx={size / 2}
           cy={size / 2}

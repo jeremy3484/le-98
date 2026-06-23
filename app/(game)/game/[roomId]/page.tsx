@@ -31,7 +31,9 @@ import { SipDistributor } from "@/components/game/sip-distributor";
 import { Scoreboard } from "@/components/game/scoreboard";
 import { RecapScreen } from "@/components/game/recap-screen";
 import { MultiplierBadge } from "@/components/game/multiplier-badge";
-import type { Card, GameRoom, GamePlayer, Profile } from "@/types/database";
+import type { Card, GameRoom, GamePlayer, GameEvent, Profile } from "@/types/database";
+
+type GameEventPayload = { id: string; type: string; payload: Record<string, unknown> };
 
 interface PlayerWithProfile extends GamePlayer {
   profile: Pick<Profile, "id" | "pseudo" | "avatar_url"> | null;
@@ -81,6 +83,18 @@ export default function GameTablePage() {
   const playersRef = useRef<PlayerWithProfile[]>([]);
   const meIdRef = useRef<string | null>(null);
 
+  // Déduplication des game_events : chaque event n'est traité qu'une fois, qu'il
+  // arrive par Realtime ou par le polling de secours.
+  const processedEventsRef = useRef<Set<string>>(new Set());
+  const processEventRef = useRef<((ev: GameEventPayload) => void) | null>(null);
+
+  const ingestEvent = useCallback((ev: GameEventPayload) => {
+    if (!ev?.id) return;
+    if (processedEventsRef.current.has(ev.id)) return;
+    processedEventsRef.current.add(ev.id);
+    processEventRef.current?.(ev);
+  }, []);
+
   const fetchPlayers = useCallback(async () => {
     const { data } = await supabase
       .from("game_players")
@@ -124,6 +138,26 @@ export default function GameTablePage() {
     if (r.status === "finished") setRecapOpen(true);
   }, [supabase, roomId, router]);
 
+  // Filet de sécurité : récupère les game_events récents et les passe au
+  // dispatcher (idempotent). Indispensable car Realtime ne pousse pas toujours
+  // les INSERT (paliers, gorgées, jokers, manche perdue…).
+  const fetchEvents = useCallback(async () => {
+    const { data } = await supabase
+      .from("game_events")
+      .select("id, type, payload, created_at")
+      .eq("room_id", roomId)
+      .order("created_at", { ascending: true })
+      .limit(40);
+    if (!data) return;
+    for (const ev of data as GameEvent[]) {
+      ingestEvent({
+        id: ev.id,
+        type: ev.type,
+        payload: (ev.payload ?? {}) as Record<string, unknown>,
+      });
+    }
+  }, [supabase, roomId, ingestEvent]);
+
   // Chargement initial.
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +179,17 @@ export default function GameTablePage() {
         return;
       }
       setRoom(r);
+      // Marque les événements déjà présents comme « vus » : on ne rejoue pas les
+      // anciens paliers/bannières quand on (re)charge la page en cours de partie.
+      const { data: existingEvents } = await supabase
+        .from("game_events")
+        .select("id")
+        .eq("room_id", roomId);
+      if (existingEvents) {
+        for (const e of existingEvents as { id: string }[]) {
+          processedEventsRef.current.add(e.id);
+        }
+      }
       await Promise.all([fetchPlayers(), fetchDeck(), fetchScores(), fetchRounds()]);
       if (r.status === "finished" && !cancelled) setRecapOpen(true);
       if (!cancelled) setLoading(false);
@@ -196,113 +241,12 @@ export default function GameTablePage() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "game_events", filter: `room_id=eq.${roomId}` },
         (payload) => {
-          const ev = payload.new as { type: string; payload: Record<string, unknown> };
-
-          if (ev.type === "round_lost") {
-            const loserProfileId = ev.payload.loser_profile_id as string;
-            const loser = playersRef.current.find((p) => p.profile_id === loserProfileId);
-            setBanner({ loserPseudo: loser?.profile?.pseudo ?? "Un joueur" });
-            setTimeout(() => setBanner(null), 4000);
-            void fetchRounds();
-            return;
-          }
-
-          if (ev.type === "palier_triggered") {
-            const p = ev.payload;
-            const kind = p.kind as PalierBannerData["kind"];
-            const sips = (p.sips as number) ?? 0;
-            const byPlayerId = p.by_player_id as string;
-            const assignedBy = p.assigned_by as string;
-
-            setPalierBanner({ kind, total: p.total as number, sips });
-            setTimeout(() => setPalierBanner(null), 4500);
-
-            // Qui répartit ? Par défaut le joueur qui a posé la carte.
-            const iPlayed = byPlayerId === meIdRef.current;
-            if (sips > 0 && iPlayed) {
-              if (assignedBy === "random") {
-                void autoAssignRandom(sips);
-              } else {
-                // 'player_who_played' (défaut) et 'all_choose' : modale chez moi.
-                setDistributorSips(sips);
-              }
-            }
-            return;
-          }
-
-          if (ev.type === "sips_assigned") {
-            const p = ev.payload;
-            const fromId = p.from_player_id as string;
-            const dist = (p.distributions ?? []) as { toPlayerId: string; amount: number }[];
-            const cur = playersRef.current;
-            const nameOf = (id: string) =>
-              cur.find((pl) => pl.id === id)?.profile?.pseudo ?? "Quelqu'un";
-            const parts = dist.map((d) => `${d.amount} à ${nameOf(d.toPlayerId)}`);
-            setSipToast(`${nameOf(fromId)} donne ${parts.join(", ")} 🍺`);
-            setTimeout(() => setSipToast(null), 4000);
-            void fetchScores();
-            return;
-          }
-
-          if (ev.type === "custom_rule_triggered") {
-            const p = ev.payload;
-            const byPlayerId = p.by_player_id as string;
-            const byPseudo =
-              playersRef.current.find((pl) => pl.id === byPlayerId)?.profile
-                ?.pseudo ?? "Un joueur";
-            setCustomRule({
-              label: (p.label as string) ?? "Règle spéciale",
-              actionType: (p.action_type as string) ?? "free_text",
-              byPseudo,
-            });
-            setTimeout(() => setCustomRule(null), 5000);
-            return;
-          }
-
-          if (ev.type === "joker_activated") {
-            const p = ev.payload;
-            const power = (p.power as string) ?? "collective_drink";
-            const byPlayerId = p.by_player_id as string;
-            const byPseudo =
-              playersRef.current.find((pl) => pl.id === byPlayerId)?.profile
-                ?.pseudo ?? "Un joueur";
-            setJokerBanner({
-              power,
-              description: (p.description as string | null) ?? null,
-              byPseudo,
-            });
-            setTimeout(() => setJokerBanner(null), 4500);
-
-            // Distribution libre : le poseur ouvre le répartiteur (5 gorgées).
-            if (power === "free_distribution" && byPlayerId === meIdRef.current) {
-              setDistributorSips(5);
-            }
-            return;
-          }
-
-          if (ev.type === "joker_penalty") {
-            const p = ev.payload;
-            const toId = p.to_player_id as string;
-            const amount = (p.sips as number) ?? 0;
-            const pseudo =
-              playersRef.current.find((pl) => pl.id === toId)?.profile?.pseudo ??
-              "Quelqu'un";
-            setSipToast(`🪞 ${pseudo} rate le miroir et boit ${amount} 🍺`);
-            setTimeout(() => setSipToast(null), 4000);
-            void fetchScores();
-            return;
-          }
-
-          if (ev.type === "joker_immunity_used") {
-            const p = ev.payload;
-            const toId = p.by_player_id as string;
-            const pseudo =
-              playersRef.current.find((pl) => pl.id === toId)?.profile?.pseudo ??
-              "Un joueur";
-            setSipToast(`🛡️ ${pseudo} est immunisé contre ce palier !`);
-            setTimeout(() => setSipToast(null), 3500);
-            return;
-          }
+          const ev = payload.new as GameEvent;
+          ingestEvent({
+            id: ev.id,
+            type: ev.type,
+            payload: (ev.payload ?? {}) as Record<string, unknown>,
+          });
         },
       )
       .subscribe();
@@ -313,18 +257,29 @@ export default function GameTablePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, roomId, router, fetchPlayers, fetchDeck, fetchScores, fetchRounds]);
 
-  // Filet de sécurité : resynchronise l'état autoritaire du serveur toutes les
-  // 2,5 s. Garantit que les tours passent même si Realtime ne délivre pas les
-  // changements (ex. canal non authentifié vis-à-vis de la RLS).
+  // Filet de sécurité : resynchronise l'état autoritaire du serveur (room,
+  // joueurs, défausse) ET rejoue les événements manqués (paliers, gorgées…)
+  // toutes les 1,5 s. Garantit le bon déroulé même si Realtime ne délivre rien.
   useEffect(() => {
     if (loading) return;
     const id = setInterval(() => {
       void fetchRoom();
       void fetchPlayers();
       void fetchDeck();
-    }, 2500);
+      void fetchEvents();
+    }, 1500);
     return () => clearInterval(id);
-  }, [loading, fetchRoom, fetchPlayers, fetchDeck]);
+  }, [loading, fetchRoom, fetchPlayers, fetchDeck, fetchEvents]);
+
+  // Authentifie le canal Realtime avec le JWT de l'utilisateur. Sans cela, les
+  // changements postgres_changes sur des tables protégées par RLS sont
+  // silencieusement abandonnés (rôle anon → aucune ligne visible).
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      const token = data.session?.access_token;
+      if (token) supabase.realtime.setAuth(token);
+    });
+  }, [supabase, user?.id]);
 
   // Répartition aléatoire des gorgées (settings.sipAssignedBy === 'random').
   const autoAssignRandom = useCallback(
@@ -350,6 +305,120 @@ export default function GameTablePage() {
     },
     [supabase, roomId],
   );
+
+  // Traitement d'un game_event (bannières, gorgées, jokers…). Appelé une seule
+  // fois par event via ingestEvent, qu'il vienne de Realtime ou du polling.
+  const processEvent = useCallback(
+    (ev: GameEventPayload) => {
+      const p = ev.payload;
+
+      if (ev.type === "round_lost") {
+        const loserProfileId = p.loser_profile_id as string;
+        const loser = playersRef.current.find((pl) => pl.profile_id === loserProfileId);
+        setBanner({ loserPseudo: loser?.profile?.pseudo ?? "Un joueur" });
+        setTimeout(() => setBanner(null), 4000);
+        void fetchRounds();
+        return;
+      }
+
+      if (ev.type === "palier_triggered") {
+        const kind = p.kind as PalierBannerData["kind"];
+        const sips = (p.sips as number) ?? 0;
+        const byPlayerId = p.by_player_id as string;
+        const assignedBy = p.assigned_by as string;
+
+        setPalierBanner({ kind, total: p.total as number, sips });
+        setTimeout(() => setPalierBanner(null), 4500);
+
+        // Qui répartit ? Par défaut le joueur qui a posé la carte.
+        const iPlayed = byPlayerId === meIdRef.current;
+        if (sips > 0 && iPlayed) {
+          if (assignedBy === "random") {
+            void autoAssignRandom(sips);
+          } else {
+            // 'player_who_played' (défaut) et 'all_choose' : modale chez moi.
+            setDistributorSips(sips);
+          }
+        }
+        return;
+      }
+
+      if (ev.type === "sips_assigned") {
+        const fromId = p.from_player_id as string;
+        const dist = (p.distributions ?? []) as { toPlayerId: string; amount: number }[];
+        const cur = playersRef.current;
+        const nameOf = (id: string) =>
+          cur.find((pl) => pl.id === id)?.profile?.pseudo ?? "Quelqu'un";
+        const parts = dist.map((d) => `${d.amount} à ${nameOf(d.toPlayerId)}`);
+        setSipToast(`${nameOf(fromId)} donne ${parts.join(", ")} 🍺`);
+        setTimeout(() => setSipToast(null), 4000);
+        void fetchScores();
+        return;
+      }
+
+      if (ev.type === "custom_rule_triggered") {
+        const byPlayerId = p.by_player_id as string;
+        const byPseudo =
+          playersRef.current.find((pl) => pl.id === byPlayerId)?.profile?.pseudo ??
+          "Un joueur";
+        setCustomRule({
+          label: (p.label as string) ?? "Règle spéciale",
+          actionType: (p.action_type as string) ?? "free_text",
+          byPseudo,
+        });
+        setTimeout(() => setCustomRule(null), 5000);
+        return;
+      }
+
+      if (ev.type === "joker_activated") {
+        const power = (p.power as string) ?? "collective_drink";
+        const byPlayerId = p.by_player_id as string;
+        const byPseudo =
+          playersRef.current.find((pl) => pl.id === byPlayerId)?.profile?.pseudo ??
+          "Un joueur";
+        setJokerBanner({
+          power,
+          description: (p.description as string | null) ?? null,
+          byPseudo,
+        });
+        setTimeout(() => setJokerBanner(null), 4500);
+
+        // Distribution libre : le poseur ouvre le répartiteur (5 gorgées).
+        if (power === "free_distribution" && byPlayerId === meIdRef.current) {
+          setDistributorSips(5);
+        }
+        return;
+      }
+
+      if (ev.type === "joker_penalty") {
+        const toId = p.to_player_id as string;
+        const amount = (p.sips as number) ?? 0;
+        const pseudo =
+          playersRef.current.find((pl) => pl.id === toId)?.profile?.pseudo ??
+          "Quelqu'un";
+        setSipToast(`🪞 ${pseudo} rate le miroir et boit ${amount} 🍺`);
+        setTimeout(() => setSipToast(null), 4000);
+        void fetchScores();
+        return;
+      }
+
+      if (ev.type === "joker_immunity_used") {
+        const toId = p.by_player_id as string;
+        const pseudo =
+          playersRef.current.find((pl) => pl.id === toId)?.profile?.pseudo ??
+          "Un joueur";
+        setSipToast(`🛡️ ${pseudo} est immunisé contre ce palier !`);
+        setTimeout(() => setSipToast(null), 3500);
+        return;
+      }
+    },
+    [fetchRounds, fetchScores, autoAssignRandom],
+  );
+
+  // Branche processEvent au ref consommé par ingestEvent (stable).
+  useEffect(() => {
+    processEventRef.current = processEvent;
+  }, [processEvent]);
 
   async function handleDistribute(
     distributions: { toPlayerId: string; amount: number }[],
