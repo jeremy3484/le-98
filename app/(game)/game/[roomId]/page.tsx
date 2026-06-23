@@ -109,6 +109,21 @@ export default function GameTablePage() {
     setDiscardTop(pile.length ? pile[pile.length - 1] : null);
   }, [supabase, roomId]);
 
+  // Recharge l'état autoritaire de la room (total, tour courant, sens, statut).
+  // Utilisé par le filet de sécurité (polling) au cas où Realtime ne pousse rien.
+  const fetchRoom = useCallback(async () => {
+    const { data } = await supabase
+      .from("game_rooms")
+      .select("*")
+      .eq("id", roomId)
+      .single();
+    if (!data) return;
+    const r = data as GameRoom;
+    setRoom(r);
+    if (r.status === "waiting") router.replace(`/game/${roomId}/lobby`);
+    if (r.status === "finished") setRecapOpen(true);
+  }, [supabase, roomId, router]);
+
   // Chargement initial.
   useEffect(() => {
     let cancelled = false;
@@ -298,6 +313,19 @@ export default function GameTablePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, roomId, router, fetchPlayers, fetchDeck, fetchScores, fetchRounds]);
 
+  // Filet de sécurité : resynchronise l'état autoritaire du serveur toutes les
+  // 2,5 s. Garantit que les tours passent même si Realtime ne délivre pas les
+  // changements (ex. canal non authentifié vis-à-vis de la RLS).
+  useEffect(() => {
+    if (loading) return;
+    const id = setInterval(() => {
+      void fetchRoom();
+      void fetchPlayers();
+      void fetchDeck();
+    }, 2500);
+    return () => clearInterval(id);
+  }, [loading, fetchRoom, fetchPlayers, fetchDeck]);
+
   // Répartition aléatoire des gorgées (settings.sipAssignedBy === 'random').
   const autoAssignRandom = useCallback(
     async (sips: number) => {
@@ -357,6 +385,11 @@ export default function GameTablePage() {
       await playCard(supabase, roomId, card.id, aceChoice);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Coup refusé.");
+      // Coup refusé (souvent "Ce n'est pas ton tour" car l'état local est en
+      // retard) : on resynchronise tout de suite l'état autoritaire du serveur.
+      void fetchRoom();
+      void fetchPlayers();
+      void fetchDeck();
     } finally {
       setBusy(false);
     }
