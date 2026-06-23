@@ -27,11 +27,30 @@ export async function playCard(
   });
 
   if (error) {
-    const ctx = (error as { context?: { body?: string } }).context;
     let serverMsg = "";
-    if (ctx?.body) {
+    const ctx = (error as { context?: unknown }).context;
+    // supabase-js v2 : error.context est un objet Response dont le corps n'a pas
+    // encore été lu. On le lit pour récupérer le vrai message du serveur.
+    if (ctx instanceof Response) {
       try {
-        serverMsg = (JSON.parse(ctx.body) as { error?: string }).error ?? "";
+        const text = await ctx.clone().text();
+        try {
+          serverMsg = (JSON.parse(text) as { error?: string }).error ?? text;
+        } catch {
+          serverMsg = text;
+        }
+      } catch {
+        /* ignore */
+      }
+    } else if (
+      ctx &&
+      typeof (ctx as { body?: unknown }).body === "string"
+    ) {
+      // Anciennes versions : context.body est déjà une chaîne JSON.
+      try {
+        serverMsg =
+          (JSON.parse((ctx as { body: string }).body) as { error?: string })
+            .error ?? "";
       } catch {
         /* ignore */
       }
