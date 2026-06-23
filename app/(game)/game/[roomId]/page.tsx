@@ -450,12 +450,33 @@ export default function GameTablePage() {
   async function doPlay(card: Card, aceChoice?: AceChoice) {
     setBusy(true);
     setError(null);
+
+    // Mise à jour optimiste : la carte quitte ma main et atterrit dans la
+    // défausse immédiatement, sans attendre l'aller-retour serveur. L'animation
+    // se déclenche donc instantanément côté poseur.
+    const prevDiscard = discardTop;
+    const prevPlayers = playersRef.current;
+    setDiscardTop(card);
+    setPlayers((cur) =>
+      cur.map((pl) =>
+        pl.profile_id === user?.id
+          ? { ...pl, hand: pl.hand.filter((c) => c.id !== card.id) }
+          : pl,
+      ),
+    );
+
     try {
       await playCard(supabase, roomId, card.id, aceChoice);
+      // Succès : on récupère tout de suite l'état autoritaire (total, tour,
+      // carte piochée) sans attendre le prochain tick de polling.
+      void fetchRoom();
+      void fetchPlayers();
+      void fetchDeck();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Coup refusé.");
-      // Coup refusé (souvent "Ce n'est pas ton tour" car l'état local est en
-      // retard) : on resynchronise tout de suite l'état autoritaire du serveur.
+      // Coup refusé : on annule l'optimiste puis on resynchronise l'autoritaire.
+      setDiscardTop(prevDiscard);
+      setPlayers(prevPlayers);
       void fetchRoom();
       void fetchPlayers();
       void fetchDeck();
